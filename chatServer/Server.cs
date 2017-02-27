@@ -6,6 +6,7 @@
 //  The client handling thread will receive messages from its client and echo them to all connected clients.  The client handling thread will continue until
 //  the quit message is received, and then it will close the socket for its client.
 //Note: the synchronous server socket example on MSDN was used as a starting point: http://msdn.microsoft.com/en-us/library/w89fhyex%28v=vs.110%29.aspx
+//Feb 2017 modification: now also supports encryption using AesManaged class from System.Security.Cryptography.
 
 using System;
 using System.Collections.Generic;
@@ -108,6 +109,7 @@ namespace chatServer
         //Return: void
         //Description: receives messages from client and echoes them out to all clients until quit message received. When quit message received then sends message
         //  to all clients informing that the given client has left, and then removes socket from list and closes the socket.
+        //  Feb 2017 modification: now also supports encryption using AesManaged class from System.Security.Cryptography.
         public static void ClientHandler(object info)
         {
             // Data buffer for incoming data.
@@ -174,29 +176,25 @@ namespace chatServer
 
                     if (!isEncrypted) //unencrypted
                     {
+                        byte[] msg;
+
                         if (!data.EndsWith("quit<EOF>")) //if not quit message
                         {
                             // Echo the data back to the clients.
-                            byte[] msg = Encoding.ASCII.GetBytes(data);
-
-                            //iterate through socketList and send msg through each so each client gets it
-                            foreach (Socket s in socketList)
-                            {
-                                s.Send(msg);
-                            }
+                            msg = Encoding.ASCII.GetBytes(data);                            
                         }
                         else //quit message
                         {
                             int colonIndex = data.IndexOf(":");
                             string userName = data.Substring(0, colonIndex);
                             // Echo the modified quit message data back to the clients.
-                            byte[] msg = Encoding.ASCII.GetBytes(userName + " has left<EOF>");
-
-                            //iterate through socketList and send msg through each so each client gets it
-                            foreach (Socket s in socketList)
-                            {
-                                s.Send(msg);
-                            }
+                            msg = Encoding.ASCII.GetBytes(userName + " has left<EOF>");
+                        }
+                        
+                        //iterate through socketList and send msg through each so each client gets it
+                        foreach (Socket s in socketList)
+                        {
+                            s.Send(msg);
                         }
                     }
                     else //encrypted
