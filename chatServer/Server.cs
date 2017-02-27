@@ -15,7 +15,8 @@ using System.Threading.Tasks;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
-
+using System.Security.Cryptography;
+using System.IO;
 
 namespace chatServer
 {
@@ -27,7 +28,14 @@ namespace chatServer
         // Incoming data from the client.
         public static string data = null;
 
-        
+        // Incoming decrypted message from the client.
+        public static string decryptData = null;
+
+        //AES Key and IV (initialization vector) length constants
+        private const int kKeyLength = 32;
+        private const int kIvLength = 16;
+
+
         //Method Name: StartListening
         //Parameters: none
         //Return: void
@@ -105,6 +113,9 @@ namespace chatServer
             // Data buffer for incoming data.
             byte[] bytes = new Byte[1024];
             data = null;
+            decryptData = null;
+            bool isEncrypted = false;
+
             //extract Socket type parameter from object info
             Socket handler = (Socket)info;
             
@@ -118,40 +129,118 @@ namespace chatServer
                         bytes = new byte[1024];
                         int bytesRec = handler.Receive(bytes);
                         data = Encoding.ASCII.GetString(bytes, 0, bytesRec);
+
+                        //if read string as is and find <EOF> that means unencrypted, so can break out of infinite loop
                         if (data.IndexOf("<EOF>") > -1)
                         {
+                            isEncrypted = false;
+                            break;
+                        }
+
+                        //if reached this point in loop then encrypted 
+                        //start by making byte array of size of bytes received then copy into it the filled bytes of the 1024
+                        byte[] filledBytes = new byte[bytesRec];
+                        Array.Copy(bytes, 0, filledBytes, 0, bytesRec);
+
+                        //make byte arrays for key, iv, and encrypted message
+                        byte[] key = new byte[kKeyLength];
+                        byte[] iv = new byte[kIvLength];
+                        byte[] encryptedMsg = new byte[filledBytes.Length - kKeyLength - kIvLength];
+
+                        //bytes received contains key in first kKeyLength bytes, then iv in next kIvLength, then rest is the encryped message
+                        //copy respective portions into their byte arrays
+                        Array.Copy(filledBytes, 0, key, 0, kKeyLength);
+                        Array.Copy(filledBytes, kKeyLength, iv, 0, kIvLength);
+                        Array.Copy(filledBytes, kKeyLength + kIvLength, encryptedMsg, 0, filledBytes.Length - kKeyLength - kIvLength);
+
+                        //Decrypt the encrypted message bytes to a string.
+                        decryptData = DecryptStringFromBytes_Aes(encryptedMsg, key, iv);
+
+                        //if read decrypted message string and find <EOF> that means encrypted, so can break out of infinite loop
+                        if (decryptData.IndexOf("<EOF>") > -1)
+                        {
+                            isEncrypted = true;
                             break;
                         }
                     }
 
-                    // Show the data on the console.
+                    // Show the data on the console 
                     Console.WriteLine("Text received : {0}", data);
-
-                    if (!data.EndsWith("quit<EOF>"))
+                    //if was encrypted then also show decrypted data
+                    if (isEncrypted)
                     {
-                        // Echo the data back to the clients.
-                        byte[] msg = Encoding.ASCII.GetBytes(data);
+                        Console.WriteLine("Decrypted text received : {0}", decryptData);
+                    }
 
-                        //iterate through socketList and send msg through each so each client gets it
-                        foreach (Socket s in socketList)
+                    if (!isEncrypted) //unencrypted
+                    {
+                        if (!data.EndsWith("quit<EOF>")) //if not quit message
                         {
-                            s.Send(msg);
+                            // Echo the data back to the clients.
+                            byte[] msg = Encoding.ASCII.GetBytes(data);
+
+                            //iterate through socketList and send msg through each so each client gets it
+                            foreach (Socket s in socketList)
+                            {
+                                s.Send(msg);
+                            }
+                        }
+                        else //quit message
+                        {
+                            int colonIndex = data.IndexOf(":");
+                            string userName = data.Substring(0, colonIndex);
+                            // Echo the modified quit message data back to the clients.
+                            byte[] msg = Encoding.ASCII.GetBytes(userName + " has left<EOF>");
+
+                            //iterate through socketList and send msg through each so each client gets it
+                            foreach (Socket s in socketList)
+                            {
+                                s.Send(msg);
+                            }
                         }
                     }
-                    else
+                    else //encrypted
                     {
-                        int colonIndex = data.IndexOf(":");
-                        string userName = data.Substring(0, colonIndex);
-                        // Echo the data back to the clients.
-                        byte[] msg = Encoding.ASCII.GetBytes(userName + " has left<EOF>");
-
-                        //iterate through socketList and send msg through each so each client gets it
-                        foreach (Socket s in socketList)
+                        if (!decryptData.EndsWith("quit<EOF>")) //if not quit message
                         {
-                            s.Send(msg);
+                            //iterate through socketList and send same received msg through each so each client gets it
+                            foreach (Socket s in socketList)
+                            {
+                                s.Send(bytes);
+                            }
+                        }
+                        else //quit message
+                        {
+                            byte[] encryptedMsgPlusAesData;
+                            int colonIndex = decryptData.IndexOf(":");
+                            string userName = decryptData.Substring(0, colonIndex);
+
+                            // Echo the modified quit message data back to the clients.
+
+                            // Create a new instance of the AesManaged
+                            // class.  This generates a new key and initialization 
+                            // vector (IV).
+                            using (AesManaged myAes = new AesManaged())
+                            {
+                                byte[] encryptedMsg;
+                                // Encrypt the modified quit message string to an array of bytes.
+                                encryptedMsg = EncryptStringToBytes_Aes(userName + " has left<EOF>", myAes.Key, myAes.IV);
+
+                                //make a new byte array that contains the key, iv, and encrypted message
+                                encryptedMsgPlusAesData = new byte[kKeyLength + kIvLength + encryptedMsg.Length];
+                                Array.Copy(myAes.Key, 0, encryptedMsgPlusAesData, 0, kKeyLength);
+                                Array.Copy(myAes.IV, 0, encryptedMsgPlusAesData, kKeyLength, kIvLength);
+                                Array.Copy(encryptedMsg, 0, encryptedMsgPlusAesData, kKeyLength + kIvLength, encryptedMsg.Length);
+                            }
+
+                            //iterate through socketList and send msg through each so each client gets it
+                            foreach (Socket s in socketList)
+                            {
+                                s.Send(encryptedMsgPlusAesData);
+                            }
                         }
                     }
-                } while (!data.EndsWith("quit<EOF>"));
+                } while (!data.EndsWith("quit<EOF>") && !decryptData.EndsWith("quit<EOF>"));
                 
                 //once quit command received then remove socket from socketList and close socket
                 socketList.Remove(handler);
@@ -169,6 +258,95 @@ namespace chatServer
         {
             StartListening();
             return 0;
+        }
+
+        //this method encrypts a plainText string to an array of bytes using AES encryption Key and IV
+        //This method was borrowed as is from: https://msdn.microsoft.com/en-us/library/system.security.cryptography.aesmanaged.aspx
+        static byte[] EncryptStringToBytes_Aes(string plainText, byte[] Key, byte[] IV)
+        {
+            // Check arguments.
+            if (plainText == null || plainText.Length <= 0)
+                throw new ArgumentNullException("plainText");
+            if (Key == null || Key.Length <= 0)
+                throw new ArgumentNullException("Key");
+            if (IV == null || IV.Length <= 0)
+                throw new ArgumentNullException("IV");
+            byte[] encrypted;
+            // Create an AesManaged object
+            // with the specified key and IV.
+            using (AesManaged aesAlg = new AesManaged())
+            {
+                aesAlg.Key = Key;
+                aesAlg.IV = IV;
+
+                // Create a decrytor to perform the stream transform.
+                ICryptoTransform encryptor = aesAlg.CreateEncryptor(aesAlg.Key, aesAlg.IV);
+
+                // Create the streams used for encryption.
+                using (MemoryStream msEncrypt = new MemoryStream())
+                {
+                    using (CryptoStream csEncrypt = new CryptoStream(msEncrypt, encryptor, CryptoStreamMode.Write))
+                    {
+                        using (StreamWriter swEncrypt = new StreamWriter(csEncrypt))
+                        {
+
+                            //Write all data to the stream.
+                            swEncrypt.Write(plainText);
+                        }
+                        encrypted = msEncrypt.ToArray();
+                    }
+                }
+            }
+
+
+            // Return the encrypted bytes from the memory stream.
+            return encrypted;
+
+        }
+
+        //this method decrypts an encrypted array of bytes to a plainText string using AES encryption Key and IV
+        //this method was borrowed as is from: https://msdn.microsoft.com/en-us/library/system.security.cryptography.aesmanaged.aspx
+        static string DecryptStringFromBytes_Aes(byte[] cipherText, byte[] Key, byte[] IV)
+        {
+            // Check arguments.
+            if (cipherText == null || cipherText.Length <= 0)
+                throw new ArgumentNullException("cipherText");
+            if (Key == null || Key.Length <= 0)
+                throw new ArgumentNullException("Key");
+            if (IV == null || IV.Length <= 0)
+                throw new ArgumentNullException("IV");
+
+            // Declare the string used to hold
+            // the decrypted text.
+            string plaintext = null;
+
+            // Create an AesManaged object
+            // with the specified key and IV.
+            using (AesManaged aesAlg = new AesManaged())
+            {
+                aesAlg.Key = Key;
+                aesAlg.IV = IV;
+
+                // Create a decrytor to perform the stream transform.
+                ICryptoTransform decryptor = aesAlg.CreateDecryptor(aesAlg.Key, aesAlg.IV);
+
+                // Create the streams used for decryption.
+                using (MemoryStream msDecrypt = new MemoryStream(cipherText))
+                {
+                    using (CryptoStream csDecrypt = new CryptoStream(msDecrypt, decryptor, CryptoStreamMode.Read))
+                    {
+                        using (StreamReader srDecrypt = new StreamReader(csDecrypt))
+                        {
+
+                            // Read the decrypted bytes from the decrypting stream
+                            // and place them in a string.
+                            plaintext = srDecrypt.ReadToEnd();
+                        }
+                    }
+                }
+
+            }
+            return plaintext;
         }
     }
 }
