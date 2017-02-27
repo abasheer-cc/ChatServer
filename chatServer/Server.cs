@@ -117,6 +117,8 @@ namespace chatServer
             data = null;
             decryptData = null;
             bool isEncrypted = false;
+            bool isDataQuit = false;
+            bool isDecryptDataQuit = false;
 
             //extract Socket type parameter from object info
             Socket handler = (Socket)info;
@@ -125,6 +127,9 @@ namespace chatServer
             {
                 do
                 {
+                    isDataQuit = false;
+                    isDecryptDataQuit = false;
+
                     // An incoming connection needs to be processed.
                     while (true)
                     {
@@ -176,16 +181,19 @@ namespace chatServer
 
                     if (!isEncrypted) //unencrypted
                     {
+                        int colonIndex = data.IndexOf(":");
+                        int eofIndex = data.IndexOf("<EOF>");
+                        string dataSubstring = data.Substring(colonIndex + 2, eofIndex - (colonIndex + 2)); //+2 b/c msg starts 2 spots past colon (colon space then msg)
                         byte[] msg;
 
-                        if (!data.EndsWith("quit<EOF>")) //if not quit message
+                        if (dataSubstring != "quit") //if not quit message
                         {
                             // Echo the data back to the clients.
                             msg = Encoding.ASCII.GetBytes(data);                            
                         }
                         else //quit message
                         {
-                            int colonIndex = data.IndexOf(":");
+                            isDataQuit = true;
                             string userName = data.Substring(0, colonIndex);
                             // Echo the modified quit message data back to the clients.
                             msg = Encoding.ASCII.GetBytes(userName + " has left<EOF>");
@@ -199,7 +207,11 @@ namespace chatServer
                     }
                     else //encrypted
                     {
-                        if (!decryptData.EndsWith("quit<EOF>")) //if not quit message
+                        int colonIndex = decryptData.IndexOf(":");
+                        int eofIndex = decryptData.IndexOf("<EOF>");
+                        string decryptDataSubstring = decryptData.Substring(colonIndex + 2, eofIndex - (colonIndex + 2)); //+2 b/c msg starts 2 spots past colon (colon space then msg)
+
+                        if (decryptDataSubstring != "quit") //if not quit message
                         {
                             //iterate through socketList and send same received msg through each so each client gets it
                             foreach (Socket s in socketList)
@@ -209,8 +221,8 @@ namespace chatServer
                         }
                         else //quit message
                         {
-                            byte[] encryptedMsgPlusAesData;
-                            int colonIndex = decryptData.IndexOf(":");
+                            isDecryptDataQuit = true;
+                            byte[] encryptedMsgPlusAesData;                            
                             string userName = decryptData.Substring(0, colonIndex);
 
                             // Echo the modified quit message data back to the clients.
@@ -238,7 +250,7 @@ namespace chatServer
                             }
                         }
                     }
-                } while (!data.EndsWith("quit<EOF>") && !decryptData.EndsWith("quit<EOF>"));
+                } while (!isDataQuit && !isDecryptDataQuit);
                 
                 //once quit command received then remove socket from socketList and close socket
                 socketList.Remove(handler);
